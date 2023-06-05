@@ -1,0 +1,164 @@
+let inputConfig = input.config({
+  title: "Generate GPT Description",
+  description:
+    "This script generates a GPT description using information from other fields.",
+  items: [
+    input.config.table("table", {
+      label: "Table",
+      description: "The table containing the records to update.",
+    }),
+    input.config.view("view", {
+      label: "View",
+      parentTable: "table",
+      description: "The view with filtered records to update.",
+    }),
+    input.config.field("PromptsDataField", {
+      label: "Enter Prompts",
+      parentTable: "table",
+      description: "Enter your prompts field here.",
+    }),
+    input.config.field("resultsField", {
+      label: "Description Field",
+      parentTable: "table",
+      description: "The field to store the generated description.",
+    }),
+    input.config.text("apiKey", {
+      label: "OpenAI API Key",
+      description: "Your OpenAI API key.",
+      isPassword: true,
+    }),
+    input.config.select("engine", {
+      label: "Engine",
+      description: "Select the GPT engine you want to use.",
+      options: [
+        { label: "🟩gpt-3.5-turbo: Advanced, Cost-effective Chat-Optimized GPT Model (4,096 tokens)", value: "gpt-3.5-turbo" },
+        { label: "gpt-3.5-turbo-0301: Deprecated Snapshot of gpt-3.5-turbo (4,096 tokens)", value: "gpt-3.5-turbo-0301" },
+        { label: "text-davinci-003: Versatile Language Model with Enhanced Quality and Features (4,097 tokens)", value: "text-davinci-003" },
+        { label: "text-davinci-002: Similar Capabilities to text-davinci-003 with Supervised Fine-tuning (4,097 tokens)", value: "text-davinci-002" },
+        { label: "code-davinci-002: Specialized Model for Code Completion Tasks (8,001 tokens)", value: "code-davinci-002" },
+        { label: "🟩gpt-4: Advanced, Chat-Optimized GPT Model (8,192 tokens)", value: "gpt-4" },
+        { label: "gpt-4-0314: Deprecated Snapshot of gpt-4 (8,192 tokens)", value: "gpt-4-0314" },
+        { label: "gpt-4-32k: Extended Context GPT Model (32,768 tokens)", value: "gpt-4-32k" },
+        { label: "gpt-4-32k-0314: Deprecated Snapshot of gpt-4-32k (32,768 tokens)", value: "gpt-4-32k-0314" }
+      ],
+      required: true,
+    }),
+    input.config.number("maxTokens", {
+      label: "Max Tokens",
+      description:
+        "Enter the maximum number of tokens for the generated response.",
+      min: 1,
+      required: true,
+    }),
+    input.config.number("temperature", {
+      label: "Temperature",
+      description:
+        "Enter the temperature value for controlling randomness (0-1).",
+      min: 0,
+      max: 1,
+      step: 0.1,
+      required: true,
+    }),
+  ],
+});
+
+
+async function main() {
+  console.log("The process has started.");
+
+
+  let table = inputConfig.table;
+  let view = inputConfig.view;
+  let PromptsDataField = inputConfig.PromptsDataField;
+  let resultsField = inputConfig.resultsField;
+  let apiKey = inputConfig.apiKey;
+  let engine = inputConfig.engine;
+  let maxTokens = inputConfig.maxTokens;
+  let temperature = inputConfig.temperature;
+
+
+  let query = await table.selectRecordsAsync();
+
+
+  let viewRecords = await view.selectRecordsAsync();
+  let viewRecordIds = viewRecords.records.map((record) => record.id);
+
+
+  let filteredRecords = query.records.filter((record) =>
+    viewRecordIds.includes(record.id)
+  );
+
+
+  let skippedCount = 0;
+  let updatedCount = 0;
+  let skippedRecordIds = [];
+  let updatedRecordIds = [];
+
+
+  for (let record of filteredRecords) {
+    let prompt = record.getCellValue(PromptsDataField.id);
+    let existingResult = record.getCellValue(resultsField.id);
+
+
+    if (existingResult && existingResult.trim() !== "") {
+      skippedCount++;
+      skippedRecordIds.push(record.id);
+      continue;
+    }
+
+    let response = await remoteFetchAsync("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: engine,
+        messages: [
+          { role: "system", content: "You are a helpful assistant." },
+          { role: "user", content: prompt },
+        ],
+        max_tokens: maxTokens,
+        temperature: temperature,
+      }),
+    });
+
+
+    let responseJson;
+    try {
+      responseJson = await response.json();
+    } catch (err) {
+      console.error(err);
+      continue;
+    }
+
+    if (response.ok) {
+      if (responseJson.choices && responseJson.choices.length > 0) {
+        let description = responseJson.choices[0].message.content.trim();
+
+        let fields = {};
+        fields[resultsField.id] = description;
+        await table.updateRecordAsync(record.id, fields);
+
+        updatedCount++;
+        updatedRecordIds.push(record.id);
+      } else {
+        console.error(`API response error: ${JSON.stringify(responseJson)} `);
+      }
+    } else {
+      console.error(
+        `API request failed: ${response.status} - ${response.statusText}`
+      );
+      console.error(`API response: ${JSON.stringify(responseJson)}`);
+    }
+  }
+
+
+  console.log(`Processing finished.\n
+Total records processed: ${filteredRecords.length}\n
+Records updated: ${updatedCount}\n
+Records skipped: ${skippedCount}
+  
+  `);
+}
+await main();
